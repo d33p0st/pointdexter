@@ -1,3 +1,7 @@
+[![Build](https://github.com/d33p0st/pointdexter/actions/workflows/build.yml/badge.svg)](https://github.com/d33p0st/pointdexter/actions/workflows/build.yml)
+[![Tests](https://github.com/d33p0st/pointdexter/actions/workflows/test.yml/badge.svg)](https://github.com/d33p0st/pointdexter/actions/workflows/test.yml)
+[![Release](https://github.com/d33p0st/pointdexter/actions/workflows/release.yml/badge.svg)](https://github.com/d33p0st/pointdexter/actions/workflows/release.yml)
+
 # pointdexter
 
 A lock-free hierarchical key/value tree with C FFI, written in Rust.
