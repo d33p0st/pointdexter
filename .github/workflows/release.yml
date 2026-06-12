@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib_file: libpointdexter.so
+            os_label: linux
+            archive_ext: tar.xz
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            lib_file: libpointdexter.dylib
+            os_label: macos
+            archive_ext: tar.xz
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib_file: pointdexter.dll
+            os_label: windows
+            archive_ext: zip
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo registry + git sources
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release cdylib
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ── Assemble + compress (Linux / macOS) ────────────────────────────────
+      - name: Assemble and compress (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          LIB="target/${{ matrix.target }}/release/${{ matrix.lib_file }}"
+          OS="${{ matrix.os_label }}"
+
+          mkdir -p dist/pointdexter.cpp dist/pointdexter.py
+
+          # cpp bundle
+          cp "$LIB"           dist/pointdexter.cpp/
+          cp pointdexter.h    dist/pointdexter.cpp/
+          cp pointdexter.hpp  dist/pointdexter.cpp/
+
+          # py bundle
+          cp "$LIB"           dist/pointdexter.py/
+          cp pointdexter.py   dist/pointdexter.py/
+
+          cd dist
+          XZ_OPT="-9e" tar -cJf "pointdexter-${OS}.cpp.tar.xz" pointdexter.cpp
+          XZ_OPT="-9e" tar -cJf "pointdexter-${OS}.py.tar.xz"  pointdexter.py
+
+      # ── Assemble + compress (Windows) ──────────────────────────────────────
+      - name: Assemble and compress (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $lib = "target\${{ matrix.target }}\release\${{ matrix.lib_file }}"
+          $os  = "${{ matrix.os_label }}"
+
+          New-Item -ItemType Directory -Force dist\pointdexter.cpp | Out-Null
+          New-Item -ItemType Directory -Force dist\pointdexter.py  | Out-Null
+
+          # cpp bundle
+          Copy-Item $lib             dist\pointdexter.cpp\
+          Copy-Item pointdexter.h    dist\pointdexter.cpp\
+          Copy-Item pointdexter.hpp  dist\pointdexter.cpp\
+
+          # py bundle
+          Copy-Item $lib            dist\pointdexter.py\
+          Copy-Item pointdexter.py  dist\pointdexter.py\
+
+          Set-Location dist
+          7z a -tzip -mx=9 "pointdexter-$os.cpp.zip" pointdexter.cpp
+          7z a -tzip -mx=9 "pointdexter-$os.py.zip"  pointdexter.py
+
+      # ── Upload assets to the triggering release ────────────────────────────
+      - name: Upload release assets
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          OS="${{ matrix.os_label }}"
+          EXT="${{ matrix.archive_ext }}"
+          TAG="${{ github.event.release.tag_name }}"
+
+          gh release upload "$TAG" \
+            "dist/pointdexter-${OS}.cpp.${EXT}" \
+            "dist/pointdexter-${OS}.py.${EXT}" \
+            --clobber

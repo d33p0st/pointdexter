@@ -1,0 +1,335 @@
+name: Test
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            lib_file: libpointdexter.so
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            lib_file: libpointdexter.dylib
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            lib_file: pointdexter.dll
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      # ── 1. Rust tests ──────────────────────────────────────────────────────
+      - name: cargo test
+        run: cargo test
+
+      # ── 2. Build release cdylib ────────────────────────────────────────────
+      - name: Build release cdylib
+        run: cargo build --release --target ${{ matrix.target }}
+
+      # ── 3. Assemble dist/pointdexter.cpp and dist/pointdexter.py (Unix) ───
+      - name: Assemble dist (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          LIB="target/${{ matrix.target }}/release/${{ matrix.lib_file }}"
+          mkdir -p dist/pointdexter.cpp dist/pointdexter.py
+
+          cp "$LIB"          dist/pointdexter.cpp/
+          cp pointdexter.h   dist/pointdexter.cpp/
+          cp pointdexter.hpp dist/pointdexter.cpp/
+
+          cp "$LIB"          dist/pointdexter.py/
+          cp pointdexter.py  dist/pointdexter.py/
+
+      # ── 3. Assemble dist folders (Windows) ────────────────────────────────
+      - name: Assemble dist (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $lib    = "target\${{ matrix.target }}\release\${{ matrix.lib_file }}"
+          $implib = "target\${{ matrix.target }}\release\pointdexter.dll.lib"
+
+          New-Item -ItemType Directory -Force dist\pointdexter.cpp | Out-Null
+          New-Item -ItemType Directory -Force dist\pointdexter.py  | Out-Null
+
+          Copy-Item $lib     dist\pointdexter.cpp\
+          Copy-Item $implib  dist\pointdexter.cpp\
+          Copy-Item pointdexter.h    dist\pointdexter.cpp\
+          Copy-Item pointdexter.hpp  dist\pointdexter.cpp\
+
+          Copy-Item $lib            dist\pointdexter.py\
+          Copy-Item pointdexter.py  dist\pointdexter.py\
+
+      # ── 4a. Test C++ (Unix) ────────────────────────────────────────────────
+      - name: Test C++ (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: dist/pointdexter.cpp
+        run: |
+          cat > test_cpp.cpp << 'EOF'
+          #include "pointdexter.hpp"
+          #include <cassert>
+          #include <iostream>
+
+          int main() {
+              PointDexter::PointDexter pd;
+
+              // create and name
+              auto p = pd.point("CPP_A");
+              assert(p.name() == "CPP_A");
+
+              // insert + get_first
+              p.insert("lang", "C++");
+              auto v = p.get_first("lang");
+              assert(v.has_value() && *v == "C++");
+
+              // multi-value get
+              p.insert("tag", "x");
+              p.insert("tag", "y");
+              assert(p.get("tag").size() == 2);
+
+              // attach / parent / detach
+              auto child = pd.point("CPP_B");
+              p.attach(child);
+              auto par = child.parent();
+              assert(par.has_value() && par->name() == "CPP_A");
+              child.detach();
+              assert(!child.parent().has_value());
+
+              // children list
+              auto c1 = pd.point("CPP_C1");
+              auto c2 = pd.point("CPP_C2");
+              p.attach(c1);
+              p.attach(c2);
+              assert(p.children().size() == 2);
+
+              // scoped search
+              c1.insert("q", "1");
+              c2.insert("q", "2");
+              p.insert("q", "0");
+              assert(p.search("q").size() == 3);
+
+              // self-attach throws AttachError
+              try { p.attach(p); assert(false); }
+              catch (const PointDexter::AttachError &) {}
+
+              // purge point
+              pd.purge_point("CPP_A");
+              assert(!pd.get("CPP_A").has_value());
+
+              std::cout << "All C++ tests passed.\n";
+          }
+          EOF
+          g++ -std=c++17 -O2 -o test_cpp test_cpp.cpp \
+              -I. -L. -lpointdexter -Wl,-rpath,"$(pwd)"
+          ./test_cpp
+
+      # ── 4b. Set up MSVC environment (Windows only) ─────────────────────────
+      - name: Set up MSVC dev tools
+        if: runner.os == 'Windows'
+        uses: ilammy/msvc-dev-cmd@v1
+
+      # ── 4c. Test C++ (Windows) ─────────────────────────────────────────────
+      - name: Test C++ (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: dist\pointdexter.cpp
+        run: |
+          @'
+          #include "pointdexter.hpp"
+          #include <cassert>
+          #include <iostream>
+
+          int main() {
+              PointDexter::PointDexter pd;
+
+              auto p = pd.point("CPP_A");
+              assert(p.name() == "CPP_A");
+
+              p.insert("lang", "C++");
+              auto v = p.get_first("lang");
+              assert(v.has_value() && *v == "C++");
+
+              p.insert("tag", "x");
+              p.insert("tag", "y");
+              assert(p.get("tag").size() == 2);
+
+              auto child = pd.point("CPP_B");
+              p.attach(child);
+              auto par = child.parent();
+              assert(par.has_value() && par->name() == "CPP_A");
+              child.detach();
+              assert(!child.parent().has_value());
+
+              auto c1 = pd.point("CPP_C1");
+              auto c2 = pd.point("CPP_C2");
+              p.attach(c1);
+              p.attach(c2);
+              assert(p.children().size() == 2);
+
+              c1.insert("q", "1");
+              c2.insert("q", "2");
+              p.insert("q", "0");
+              assert(p.search("q").size() == 3);
+
+              try { p.attach(p); assert(false); }
+              catch (const PointDexter::AttachError &) {}
+
+              pd.purge_point("CPP_A");
+              assert(!pd.get("CPP_A").has_value());
+
+              std::cout << "All C++ tests passed.\n";
+          }
+          '@ | Set-Content test_cpp.cpp
+          cl /std:c++17 /EHsc /O2 /I. test_cpp.cpp /link /LIBPATH:. pointdexter.dll.lib
+          .\test_cpp.exe
+
+      # ── 5a. Test Python (Unix) ─────────────────────────────────────────────
+      - name: Test Python (Unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        working-directory: dist/pointdexter.py
+        run: |
+          cat > test_py.py << 'EOF'
+          import sys
+          sys.path.insert(0, ".")
+          from pointdexter import PointDexter, Point, AttachError
+
+          pd = PointDexter()
+
+          # create and name
+          p = pd.point("PY_A")
+          assert p.name == "PY_A", f"got {p.name}"
+
+          # insert + get_first
+          p.insert("lang", "Python")
+          assert p.get_first("lang") == "Python"
+
+          # multi-value get
+          p.insert("tag", "x")
+          p.insert("tag", "y")
+          assert len(p.get("tag")) == 2
+
+          # attach / parent / detach
+          child = pd.point("PY_B")
+          p.attach(child)
+          par = child.parent
+          assert par is not None and par.name == "PY_A"
+          child.detach()
+          assert child.parent is None
+
+          # children list
+          c1 = pd.point("PY_C1")
+          c2 = pd.point("PY_C2")
+          p.attach(c1)
+          p.attach(c2)
+          assert len(p.children) == 2
+
+          # scoped search
+          c1.insert("q", "1")
+          c2.insert("q", "2")
+          p.insert("q", "0")
+          assert len(p.search("q")) == 3
+
+          # self-attach raises AttachError
+          try:
+              p.attach(p)
+              raise AssertionError("should have raised AttachError")
+          except AttachError:
+              pass
+
+          # global search
+          results = pd.search("lang")
+          assert any(v == "Python" for _, v in results)
+
+          # purge point
+          pd.purge_point("PY_A")
+          assert pd.get("PY_A") is None
+
+          print("All Python tests passed.")
+          EOF
+          python3 test_py.py
+
+      # ── 5b. Test Python (Windows) ──────────────────────────────────────────
+      - name: Test Python (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: dist\pointdexter.py
+        run: |
+          @'
+          import sys
+          sys.path.insert(0, ".")
+          from pointdexter import PointDexter, Point, AttachError
+
+          pd = PointDexter()
+
+          p = pd.point("PY_A")
+          assert p.name == "PY_A", f"got {p.name}"
+
+          p.insert("lang", "Python")
+          assert p.get_first("lang") == "Python"
+
+          p.insert("tag", "x")
+          p.insert("tag", "y")
+          assert len(p.get("tag")) == 2
+
+          child = pd.point("PY_B")
+          p.attach(child)
+          par = child.parent
+          assert par is not None and par.name == "PY_A"
+          child.detach()
+          assert child.parent is None
+
+          c1 = pd.point("PY_C1")
+          c2 = pd.point("PY_C2")
+          p.attach(c1)
+          p.attach(c2)
+          assert len(p.children) == 2
+
+          c1.insert("q", "1")
+          c2.insert("q", "2")
+          p.insert("q", "0")
+          assert len(p.search("q")) == 3
+
+          try:
+              p.attach(p)
+              raise AssertionError("should have raised AttachError")
+          except AttachError:
+              pass
+
+          results = pd.search("lang")
+          assert any(v == "Python" for _, v in results)
+
+          pd.purge_point("PY_A")
+          assert pd.get("PY_A") is None
+
+          print("All Python tests passed.")
+          '@ | Set-Content test_py.py
+          python test_py.py
